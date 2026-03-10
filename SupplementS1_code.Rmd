@@ -246,6 +246,9 @@ for (i in c(1:num_runs)) {
     sizebcol = "Veg.94", repstracol = "Inf.94", fecacol = "Inf.94",
     stageassign = cypframe_fb, stagesize = "sizeadded", NAas0 = TRUE)
   
+  # If using package lefko3 version LATER than 6.7.2, then can remove lines 240-247 and uncomment the line below
+  #sampleraw_v2 <- bootstrap3(cypraw_v2, reps = 1, rename = TRUE)[[1]]
+  
   sample_surv <- try(glmer(alive3 ~ repstatus2 + size2added + (1 | year2) +
     (1 | individ), data = sampleraw_v2, family = binomial))
   sample_obsdata <- subset(sampleraw_v2, alive3 == 1)
