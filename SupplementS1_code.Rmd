@@ -1,0 +1,342 @@
+---
+title: "Supplement S1. Invasibility Analysis Example"
+output:
+  pdf_document: default
+  html_notebook: default
+header-includes:
+  - \setlength{\parindent}{1cm}
+bibliography: adapt3tutorial.bib
+csl: ecology-letters.csl
+---
+
+  In this example, we will attempt to replicate a pairwise invasibility analysis published in @shefferson_life_2014. In that article, the authors attempted to determine whether vegetative dormancy could be adaptive in the two plant species *Anemone americana* and *Cypripedium parviflorum*. Vegetative dormancy is a condition of some herbaceous perennial plant species in which the plant does not sprout for one or more consecutive years, living entirely underground during that time. The plant neither photosynthesizes nor flowers during that time. Vegetative dormancy can be thought of as imperfect sprouting, since there is an annual probability of sprouting that is less than 1. We will focus this example on *Cypripedium parviflorum*.
+  
+  Early analyses on this species showed that vegetively dormant individuals exhibit higher mortality than sprouting individuals [@shefferson_life_2003]. This was initially taken as a life history cost, which, together with the lack of both photosynthesis and flowering, suggested that vegetative dormancy may be maladaptive. Later analyses, however, suggested that plants that engage more commonly in dormancy may have higher mortality to begin with, because they have a tendency to be smaller [@shefferson_survival_2006]. Others have suggested that vegetative dormancy may be a bet-hedging trait, which would imply seemingly maladaptive patterns in the short-term [@shefferson_evolutionary_2009; @gremer_are_2012].
+  
+  In @shefferson_life_2014, the authors assessed the adaptive context of vegetative dormancy with pairwise invasibility analysis developed from an 18 year demographic dataset from a population in northeastern Illinois, USA. They built function-based MPMs in which the sprouting probability was explicitly modeled as a generalized linear mixed model (GLMM). Genetic variants were built by adding positive or negative deviations to the *y*-intercept of this sprouting model, with the intention of either increasing or reducing the general tendency to sprout. Because the authors suspected that vegetative dormancy might relate to long-term growth costs, they built historical MPMs as well as standard, ahistorical MPMs [@ehrlen_dynamics_2000]. Further, because some have suggested that vegetative dormancy might be a bet-hedging trait, they ran stochastic simulations in addition to deterministic simulations, for both ahistorical and historical cases.
+  
+  The resulting pairwise invasibility analysis showed an optimal intermediate sprouting tendency even in the ahistorical, deterministic model, suggesting that vegetative dormancy is adaptive because of costs of growth and size [@shefferson_life_2014]. These costs were particularly prevalent in juveniles, where increased size led to increased mortality.
+  
+  Our new version of this analysis updates this older analysis in three ways, leading to results that are qualitatively similar though quantitatively slightly different. First, we updated the life history model to reflect better what we now know of this species, particularly incorporating size explicitly as the number of sprouts and thus creating what can be considered a discrete size version of a complex IPM. Second, we rewrote the code using the general MPM programming environment of R package `lefko3` [@shefferson_lefko3_2021]. Finally, we estimated the ESS deviation on the *y*-intercept of the sprouting probability model using a variant of the elasticity method of @benton_optimal_1999. Particularly, our version of this elasticity method ensures that the invader trait value is always lower than the resident trait value, even for traits with negative values (this was accomplished by setting $\varepsilon _{neg} = 1 + (1 - \varepsilon _{pos})$, where $\varepsilon _{pos}$ and $\varepsilon _{neg}$ are the elasticity trait multipliers for invaders when trait values are positive and negative, respectively).
+  
+### PART 1. Develop MPMs
+
+  To start, we will clear memory, load packages `lefko3` and `adapt3`, and load the dataset. This dataset is taken from a population of *Cypripedium parviflorum* (family Orchidaceae) growing in ne. Illinois, USA, and it is included in package `adapt3`.
+```{r block1}
+rm(list=ls(all=TRUE))
+
+library(lefko3)
+library(adapt3)
+
+data(cypa_data)
+dim(cypa_data)
+summary(cypa_data)
+```
+
+  This dataset includes information on 1103 individuals arranged horizontally, by row. There are 37 variables, by column. The first column gives identifying information for each individual. This is followed by 18 sets of two columns, each named `Inf.XX` and `Veg.XX`, where `XX` corresponds to the year of observation and with years organized consecutively. Thus, columns 2-3 refer to year 1994, columns 4-5 refer to year 1995, etc. This strictly repeating pattern allows us to manipulate the original dataset quickly and efficiently via `lefko3` (see the free online e-book *lefko3: a gentle introduction* at <a href = "https://revolutionarydemography-lefko3gentle.share.connect.posit.cloud/">https://revolutionarydemography-lefko3gentle.share.connect.posit.cloud/</a> for more).
+
+  Our example will be aimed at replicating the pairwise invasibility analysis from the ahistorical, deterministic analysis of the same population published in @shefferson_life_2014. Because we will use a function-based approach, which is very similar to building an integral projection model (IPM), we will use a larger resolution life history model allowing for all observed sizes of both vegetative and flowering adults, where size is defined by the number of sprouts. The life history model is entered as a stageframe, using function `sf_create()`.
+```{r block2}
+stagevector <- c("SD", "P1", "SL", "D", "V1", "V2", "V3", "V4", "V5", "V6",
+  "V7", "F1", "F2", "F3", "F4", "F5", "F6", "F7")
+indataset <- c(0, 0, 0, 1, rep(1, 7), rep(1, 7))
+sizevector <- c(0, 0, 0, 0, c(1:7), c(1:7))
+repvector <- c(0, 0, 0, 0, rep(0, 7), rep(1, 7))
+obsvector <- c(0, 0, 0, 0, rep(1, 7), rep(1, 7))
+matvector <- c(0, 0, 0, 1, rep(1, 7), rep(1, 7))
+immvector <- c(0, 1, 1, 0, rep(0, 7), rep(0, 7))
+propvector <- c(1, 0, 0, 0, rep(0, 7), rep(0, 7))
+comments <- c("Dormant seed", "Protocorm", "Seedling", "Veg dorm",
+  "Veg adult 1 stem", "Veg adult 2 stems", "Veg adult 3 stems",
+  "Veg adult 4 stems", "Veg adult 5 stems", "Veg adult 6 stems",
+  "Veg adult 7 stems", "Flo adult 1 stem", "Flo adult 2 stems",
+  "Flo adult 3 stems", "Flo adult 4 stems", "Flo adult 5 stems",
+  "Flo adult 6 stems", "Flo adult 7 stems")
+
+cypframe_fb <- sf_create(sizes = sizevector, stagenames = stagevector, 
+  repstatus = repvector, obsstatus = obsvector, matstatus = matvector, 
+  propstatus = propvector, immstatus = immvector, indataset = indataset,
+  comments = comments)
+```
+  
+  Now we will standardize our dataset using the new life history model, allowing `lefko3` to develop stage calls for all plants in every time.
+```{r block3}
+cypraw_v2 <- verticalize3(data = cypa_data, noyears = 18, firstyear = 1994,
+  individcol = "plant_id", blocksize = 2, sizeacol = "Inf.94",
+  sizebcol = "Veg.94", repstracol = "Inf.94", fecacol = "Inf.94",
+  stageassign = cypframe_fb, stagesize = "sizeadded", NAas0 = TRUE)
+summary_hfv(cypraw_v2)
+```
+  
+  Next we will develop the vital rate models. These will be developed as generalized linear mixed models. Survival probability, observation probability (equivalent to sprouting probability, which is assumed to be less than 1.0 due to vegetative dormancy), and reproduction probability will all be assessed assuming a binomial response under the logit link. Size and fecundity will be assessed assuming a Poisson distribution using a log link, though fecundity will be zero-inflated.
+```{r block4}
+cypmodels2 <- modelsearch(cypraw_v2, historical = FALSE, approach = "mixed", 
+  vitalrates = c("surv", "obs", "size", "repst", "fec"),
+  sizedist = "poisson", fecdist = "poisson", fec.zero = TRUE,
+  suite = "main", size = c("size3added", "size2added", "size1added"),
+  quiet = "partial")
+summary(cypmodels2)
+```
+  
+  The output of the vital rate modeling exercise is worth looking over. Note that our best-fit models vary in interesting ways. For example, increasing size has a negative impact on survival, while reproductive status has a positive impact. In contrast, increasing size increases the probability of sprouting, size, and the probability of reproduction. These patterns suggest interesting trade-offs that might constrain natural selection, particularly through mortality. Also note the model accuracy in the best-fit models, which includes some models with high accuracy (e.g., survival), and others with fairly low accuracy (e.g., primary size and fecundity).
+  
+  Let's also take a closer look at one model in particular, which is the sprouting (observation) model. We call that model explicitly in the code block below. Note that the structure is that of a binomial mixed model, in which the sole fixed effect is size in time *t*, and individual identity and year in time *t* are random factors. When we build our pairwise invasibility analysis later in this example, we will target this model in particular by adding numeric offsets to its *y*-intercept (currently set at 0.696).
+```{r block5}
+summary(cypmodels2$observation_model)
+```
+  
+  Our next step will be to develop an MPM. Although we will not project this MPM through our invasibility analysis, this is our chance to see what the matrices will look like that will be built in the course of analysis. Prior to creating the MPM, we will need to include a series of supplemental parameter values that are not included in our dataset. These parameters include the germination rate, survival probabilities associated with protocorms and seedlings, as well as the assumed mean number of seeds per fruit. So, we will set up the proper supplemental parameters using `lefko3` function `supplemental()`, and then create MPMs to look at more carefully.
+```{r block6}
+germ <- 0.2
+sl_mult <- 0.2
+sl_surv <- 0.2
+seeds_per_fruit <- 10000
+
+cypsupp2f <- supplemental(stage3 = c("SD", "P1", "SL", "SL", "D", "V1", "mat",
+    "mat", "mat", "SD", "P1"),
+  stage2 = c("SD", "SD", "P1", "SL", "SL", "SL", "D", "V1", "V2", "rep", "rep"),
+  eststage3 = c(NA, NA, NA, NA, "D", "V1", "mat", "mat", "mat", NA, NA), 
+  eststage2 = c(NA, NA, NA, NA, "V1", "V1", "D", "V1", "V2", NA, NA),
+  givenrate = c(0.1, germ, sl_surv, sl_surv, NA, NA, NA, NA, NA, NA, NA),
+  multiplier = c(NA, NA, NA, NA, sl_mult, sl_mult, 0.4, 0.4, 0.4,
+    0.5 * seeds_per_fruit * 0.1, 0.5 * seeds_per_fruit * germ),
+  type =c(1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 3),
+  stageframe = cypframe_fb, historical = FALSE)
+
+cypmatrix2f <- flefko2(stageframe = cypframe_fb, supplement = cypsupp2f, 
+  modelsuite = cypmodels2, data = cypraw_v2)
+summary(cypmatrix2f)
+```
+  
+  The resulting summary is important to inspect. A good MPM will have reasonable survival probabilities, meaning that there will be no stage probabilities outside the range of [0, 1] (stage survival probabilities are column sums in the survival-transition matrix). We also see that our summary suggests that there are no dead-end stages, which suggests no stages leading to death without the possibility of reproduction. Since everything looks alright, we will now need to translate the `lefkoMod` object that we created to hold our vital rate models into an object accessible by `adapt3`. We will do that with the `miniMod()` function in package `lefko3`, which packages the mixed models that we have created into an object that allows new matrices to be developed later at each time step.
+```{r block7}
+cyp_vrm <- miniMod(cypmodels2, hfv_data = cypraw_v2)
+```
+  
+### PART 2. Develop Trait Axis
+  
+  Our next step will be to produce a trait axis, which is a data frame that lists all of the variants that will be tested. The trait axis needs to span a reasonable range of the variable trait, and still needs to produce a population that grows rather than immediately goes extinct. In practice, this step will likely require a few attempts, though we will use a range of values here that we know to work properly.
+  
+  Producing the trait axis also requires thought as to the number of variants to include. This choice is important because the most important result of a pairwise invasibility analysis is arguably the pairwise invasion plot (PIP), and the resolution of that plot depends on the number of variants to test. High numbers of variants will lead to a high resolution plot, while low numbers will produce low resolution plots that may not be properly interpretable or publishable. On the other hand, because pairwise invasibility analysis involves testing every pairwise permutation of variants together, lower numbers of variants will yield relatively quick results, while a high number of variants may yield an analysis that takes hours or days to run. We will use both approaches in this example, but advise users to try only the first, low-resolution version initially, as the second version may take more than full day to run on some computers.
+  
+  In the block below, we use the `trait_axis()` function to create a low-resolution data frame, and the most important thing to note is that the trait axis will denote additive deviations to the *y*-intercept of the sprouting model via the `obs_dev` argument. There are many other deviations possible, including not just additive deviations to vital rate models but also overwrites, additive offsets, and multipliers for matrix elements. Here, we will define the limits to the *y*-intercept deviations as -0.5 and 2.5, and then create eight variants total (given in argument `length.out`). Note that these will be defined solely by additive deviation to the *y*-intercept of the sprouting model (observation probability), which is a binomial mixed effects model.
+```{r block8}
+current_traits_8 <- trait_axis(cypframe_fb, stagebased = TRUE, agebased = FALSE,
+  historical = FALSE, obs_dev = seq(from = -0.5, to = 2.5, length.out = 8))
+current_traits_8
+```
+  
+  We will also use this opportunity to create a high-resolution trait axis. The code below develops a trait axis with 100 variants, which will produce a publishable PIP but will take many hours or potentially days to analyze.
+```{r block9}
+current_traits_100 <- trait_axis(cypframe_fb, stagebased = TRUE, agebased = FALSE,
+  historical = FALSE, obs_dev = seq(from = -0.5, to = 2.5, length.out = 100))
+```
+  
+### PART 3. Weight Individuals
+  
+  In this exercise, we will assume that all individuals are equal in terms of the aggregate population size. However, there may be circumstances in which we wish to devalue certain life stages, or downweight or upweight the impacts of individuals of certain species if conducting a community projection. Function `equiv_input()` can be used for these purposes. For example, the following line would eliminate dormant seed from being counted in the aggregate population size used to determine the values of density dependent vital rates. This may be particularly useful in species such as *Cypripedium parviflorum*, which produces extremely large numbers of dust seeds. Note that we will not use this later in our analysis - it is only shown for instructional purposes.
+```{r block10}
+unused_ei <- equiv_input(cypmatrix2f, stage2 = "SD", value = 0.)
+unused_ei
+```
+  
+### PART 4. Develop Start Vectors
+  
+  Next we will define a starting vector for the simulation. Most pairwise invasibility analyses start with a single juvenile, as occurred also in @shefferson_life_2014. We will use a starting vector with a single protocorm individual.
+```{r block11}
+cyp_start <- start_input(cypmatrix2f, stage2 = "P1", value = 1)
+cyp_start
+```
+  
+  Start vectors may be set to any combination of individuals. See our MCM example for a more complicated set of start vectors.
+  
+### PART 5. Determine Density Dependence
+  
+  Next, we will set up the proper density dependence to use in simulations. We advise that users explore the development of density dependent parameters elsewhere, and take great care with fitting the parameters properly. This can be a difficult and time-consuming process, and we do not have the space to explore the full methodology here so will simply use parameters similar to those developed in @shefferson_life_2014.
+```{r block12}
+c2d_1 <- density_input(cypmatrix2f, stage3 = c("P1", "P1"), stage2= c("SD", "rep"),
+  style = 1, time_delay = 1, alpha = 1.1, beta = 0.0000005, type = c(1, 2))
+c2d_1
+```
+  
+  Pairwise invasibility analysis requires that the resident reach a reasonably stable population size at some point in the simulation, prior to introducing the invader. Here, we will quickly run a projection of the sample MPM under the density dependence that we set above, using `lefko3`'s `f_projection3()` function, and plot the outcome. This will give us a sense of whether everything appears to be working, and also give us a sense of when to introduce the invader.
+```{r block13, fig.cap= "Density dependent projection of baseline Cypripedium MPM."}
+cyp_proj1 <- f_projection3(format = 3, stageframe = cypframe_fb,
+  supplement = cypsupp2f, modelsuite = cypmodels2, times = 1000,
+  start_frame = cyp_start, data = cypraw_v2, density = c2d_1,
+  integeronly = FALSE, year = 2008)
+plot(cyp_proj1)
+```
+  
+  A quick glance at the plot shows an ideal population growth curve for pairwise invasibility analysis, since the population grows rather quickly to a stable plateau. In our invasibility analysis later, variants will be introduced into the population after the plateau is reached. Here, it appears that the population has hit a stable plateau within the first 200 time steps. However, to be on the safe side and account for the possibility of slower population growth with some genetic variants, we will set our invader entry time to 800.
+  
+### PART 6. Conduct Simulation
+  
+  Finally, we have arrived at the pairwise invasibility analysis. For this purpose, we will use the `invade3()` function. The key setting that makes this a pairwise invasibility analysis rather than a multiple invasibility analysis is the `var_per_run = 2` setting. Note that we are also setting `trait_optima = TRUE`, which allows us to estimate the ESS value of the additive deviation to the sprouting model, if one exists. Although this is a short analysis, it may still take a few minutes to run (~1.5 min on a MacBook Pro with Apple M3 Max architecture). We will set `benchmark = TRUE` to get progress benchmarks as the analysis works.
+```{r block14}
+set.seed(42) # To ensure consistent results
+
+cyp_inv3_8 <- invade3(axis = current_traits_8, vrm = cyp_vrm, format = 3,
+  starts = cyp_start, years = 2008, stageframe = cypframe_fb,
+  supplement = cypsupp2f, entry_time = c(0, 300), integeronly = FALSE,
+  times = 500, fitness_times = 60, var_per_run = 2, stochastic = FALSE,
+  density = c2d_1, trait_optima = TRUE, benchmark = TRUE)
+summary(cyp_inv3_8)
+```
+  
+### PART 7. Interpret Simulation Results
+  
+  The resulting output suggests that we do not have any ESS trait optima, although we cannot be sure of this until we look at the PIP. As before, we can take a peek at what some of these projections themselves look like. Let's look at one.
+```{r block15, fig.cap= "A single run from the pairwise invasibility analysis of Cypripedium sprouting deviation."}
+plot(cyp_inv3_8, pip = FALSE, run = 10)
+```
+  
+  In both plots, the default is that the resident variant is given in solid black, while the invader is shown in dashed red. At first glance the invader seems to be so low as to be extinct in both cases. However, we can take a look at the actual growth of the invader in run 10 by zooming in, as follows.
+```{r block16, fig.cap= "A single run from the pairwise invasibility analysis of Cypripedium sprouting deviation, zoomed in to see invader dynamics."}
+plot(cyp_inv3_8, pip = FALSE, run = 10, ylim = c(0, 1.5), bty = "n")
+```
+  
+  We can see that the invader grows initially in at least some of the simulations. Now let's see the pairwise invasibility plot (PIP).
+```{r block17, fig.cap= "Low resolution pairwise invasibility plot for Cypripedium sprouting deviation."}
+plot(cyp_inv3_8, auto_axis = TRUE)
+```
+  
+  The result is certainly not pretty. This is a low resolution PIP. In this case, this filled contour plot has been formed on the basis of only 64 data points, which are the invasion coefficients estimated from the growth of the invader in each pairwise permutation of variants. The gray regions show areas that are estimated to have positive invasion coefficients (i.e. the invading variant is growing), and the white show cases where the invading variant is shrinking in the population or extinct. The actual data used to create this contour plot can be viewed in the `adaptInv` object that we created, as follows.
+```{r block18}
+cyp_inv3_8$fitness
+```
+  
+  Function `invade3()` assesses whether trait optima occur using a methodology based on the elasticity methodology of @benton_optimal_1999, and on the version of it that appears in @roff_modeling_2010. This methodology uses an optimization algorithm that, like the PIP results, improves with higher resolution. The summary statement for our `adaptInv` object suggested that an optimum was found, so let's take a look at that estimate.
+```{r block19}
+cyp_inv3_8$optim$ESS_values
+```
+  
+  Our pairwise invasibility analysis suggests a classic ESS value of the deviation to the *y*-intercept of the sprouting (observation) probability model, as the old analysis also shows [@shefferson_life_2014]. However, our ESS value is slightly different than the observed *y*-intercept. Let's take a look at the elasticity plot, which shows us the results of that analysis.
+```{r block20, fig.cap= "Low-res elasticity analysis of invasion fitness for Cypripedium sprouting deviation."}
+plot(cyp_inv3_8, pip = FALSE, elast = TRUE, auto_axis = TRUE, bty = "n")
+```
+  
+  Our converged ESS value is estimated where our fitness line crosses the 0 Invader Fitness line. We see that it is an additive deviation with a small, positive value. Notice that this value is somewhat different from the value suggested by the PIP, although the actual elasticity analysis has yielded the correct estimate. Most likely, our plot does nor completely match the PIP and elasticity analysis estimate because of the relatively low resolution of the analysis (i.e., the trait axis has few variants).
+  
+  Is this optimal value significantly different from 0? Let's estimate the standard error for the ESS value. We will use the demographic shuffling approach used in @shefferson_life_2014. Note that we would need to bootstrap our dataset at least 500 times to produce a standard error for publication. To keep the run-time for this block relatively short, we will only conduct 10 and use `writeLines()` to keep us up-to-date on the progress (the run-time on the author's MacBook Pro with Apple M3 Max architecture was roughly 18 min). Note also that we will assume the vital rate models identified as the best-fit models in object `cypmodels2` are correct, and force them to be reparameterized with each bootstrapped dataset. At times, the structure of the bootstrapped dataset may yield problematic parameterizations, causing a bootstrap to fail. That is to be expected, given the nature of bootstrapping. The ESS value of each bootstrapped invasibility analysis will be stored in vector `output_vec`, including failed estimates noted as NA values.
+```{r block21}
+library(lme4)
+library(glmmTMB)
+
+sample_traits <- trait_axis(cypframe_fb, stagebased = TRUE, agebased = FALSE,
+  historical = FALSE, obs_dev = seq(from = -0.5, to = 2.0, length.out = 8))
+
+num_runs <- 10 # Change this to 500 for something publishable, but be prepared to wait
+
+output_vec <- rep(NA, num_runs)
+
+sample_size <- dim(cypa_data)[1]
+
+for (i in c(1:num_runs)) {
+  writeLines(paste0("Current iteration: ", i, "\n"))
+  
+  set.seed(i)
+  
+  sample_order <- sample(1:sample_size, sample_size, replace = TRUE)
+  sample_data <- cypa_data[sample_order,]
+  sample_data$plant_id <- c(1:sample_size)
+  
+  sampleraw_v2 <- verticalize3(data = sample_data, noyears = 18, firstyear = 1994,
+    individcol = "plant_id", blocksize = 2, sizeacol = "Inf.94",
+    sizebcol = "Veg.94", repstracol = "Inf.94", fecacol = "Inf.94",
+    stageassign = cypframe_fb, stagesize = "sizeadded", NAas0 = TRUE)
+  
+  sample_surv <- try(glmer(alive3 ~ repstatus2 + size2added + (1 | year2) +
+    (1 | individ), data = sampleraw_v2, family = binomial))
+  sample_obsdata <- subset(sampleraw_v2, alive3 == 1)
+  sample_obs <- try(glmer(obsstatus3 ~ size2added + (1 | year2) + (1 | individ),
+    data = sample_obsdata, family = binomial))
+  sample_sizedata <- subset(sample_obsdata, obsstatus3 == 1)
+  sample_sizem <- try(glmer(size3added ~ size2added + (1 | year2) + (1 | individ),
+    data = sample_sizedata, family = poisson))
+  sample_repst <- try(glmer(repstatus3 ~ repstatus2 + size2added + (1 | year2) +
+    (1 | individ), data = sample_sizedata, family = poisson))
+  sample_fecdata <- subset(sampleraw_v2, repstatus2 == 1)
+  sample_fec <- try(glmmTMB(feca2 ~ (1 | year2) + (1 | individ),
+    zi = feca2 ~ (1 | year2) + (1 | individ), data = sample_fecdata,
+    family = poisson))
+  
+  samplemodels2 <- cypmodels2
+  samplemodels2$survival_model <- sample_surv
+  samplemodels2$observation_model <- sample_obs
+  samplemodels2$size_model <- sample_sizem
+  samplemodels2$repstatus_model <- sample_repst
+  samplemodels2$fecundity_model <- sample_fec
+  
+  sample_vrm <- try(miniMod(samplemodels2, hfv_data = sampleraw_v2))
+  
+  sample_inv3 <- try(invade3(axis = sample_traits, vrm = sample_vrm, format = 3,
+    starts = cyp_start, years = 2008, stageframe = cypframe_fb,
+    supplement = cypsupp2f, entry_time = c(0, 300), integeronly = FALSE,
+    times = 500, fitness_times = 60, var_per_run = 2, stochastic = FALSE,
+    density = c2d_1, trait_optima = TRUE))
+  
+  try(output_vec[i] <- sample_inv3$optim$ESS_values$obs_dev[1])
+  try(writeLines(paste0("ESS: ", sample_inv3$optim$ESS_values$obs_dev[1], "\n")))
+}
+```
+  
+  The bootstrapped ESS values that we developed are generally positive, and generally very similar to one another. Let's see the mean and standard error, as well as whether the ESS value is significantly different from 0.
+```{r block22}
+mean_sim <- mean(output_vec, na.rm = TRUE)
+se_sim <- sd(output_vec, na.rm = TRUE)
+
+true_ESS <- cyp_inv3_8$optim$ESS_values$obs_dev[1]
+z_value <- abs(true_ESS) / se_sim
+p_value <- pnorm(z_value, mean = 0, sd = 1, lower.tail = FALSE)
+
+writeLines(paste0("True ESS: ", true_ESS))
+writeLines(paste0("Simulated ESS: ", mean_sim))
+writeLines(paste0("Simulated SE: ", se_sim))
+writeLines(paste0("Z score: ", z_value))
+writeLines(paste0("p-value: ", p_value))
+```
+  
+  Clearly, our ESS differs significantly from 0, meaning that our optimal *y*-intercept of sprouting probability is actually higher than that observed in the population. This suggests that natural selection should be acting to increase it a bit. Now let's work out a figure showing the predicted sprouting probability as a function of plant size, which is given in number of sprouts.
+```{r block23, fig.cap= "Observed and optimal sprouting probability in Cypripedium."}
+cyp_pred_df <- data.frame(size2added = c(0:7), year2 = 2004, individ = "A 1")
+
+new_model <- cypmodels2$observation_model
+new_model@beta[1] <- cypmodels2$observation_model@beta[1] + true_ESS
+
+cyp_pred_df$pred_y <- predict(cypmodels2$observation_model,
+  newdata = cyp_pred_df, type = "response")
+cyp_pred_df$new_pred_y <- predict(new_model, newdata = cyp_pred_df,
+  type = "response")
+
+plot(pred_y ~ size2added, data = cyp_pred_df, ylab = "P(sprouting)",
+  xlab = "# of sprouts", ylim = c(0.60, 1.00), lwd = 2, type = "l", bty = "n")
+lines(new_pred_y ~ size2added, data = cyp_pred_df, lty = 2, lwd = 2,
+  col = "red")
+legend("bottomright", c("Observed", "ESS"), lty = c(1, 2), lwd = 2,
+  col = c("black", "red"), bty = "n")
+```
+  
+  Now we will also show how to run a high resolution invasibility analysis. We do not recommend running the following block, because they will take a long time to run (~3.5 hrs on an 8-core AMD Ryzen 9 5900HS processor). However, we show the results below. Note that the only difference from the previous run of `invade3()` is that we will now use our high resolution trait axis.
+```{r block24, eval = FALSE}
+cyp_inv3_100 <- invade3(axis = current_traits_100, vrm = cyp_vrm, format = 3,
+  starts = cyp_start, years = 2008, stageframe = cypframe_fb,
+  supplement = cypsupp2f, entry_time = c(0, 300), integeronly = FALSE,
+  times = 500, fitness_times = 60, var_per_run = 2, stochastic = FALSE,
+  density = c2d_1, trait_optima = TRUE, benchmark = TRUE)
+```
+  
+```{r block24a, include=FALSE}
+load("cyp_inv3_100.Rdata")
+```
+
+  Let's see the associated PIP.
+```{r block25, fig.cap= "High resolution pairwise invasibility plot for Cypripedium sprouting deviation."}
+plot(cyp_inv3_100, auto_axis = TRUE)
+```  
+  
+  A fairly beautiful PIP!
+  
+  
+Literature Cited
+
